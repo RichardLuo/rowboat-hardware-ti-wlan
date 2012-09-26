@@ -14,7 +14,7 @@ esac
 
 TARGET_FW_DIR=/system/etc/firmware/ti-connectivity
 TARGET_NVS_FILE=$TARGET_FW_DIR/wl1271-nvs.bin
-TARGET_INI_FILE=/system/etc/wifi/TQS_D_1.7.ini
+TARGET_INI_FILE=/system/etc/wifi/TQS_S_2.6.ini
 WL12xx_MODULE=/system/lib/modules/wl12xx_sdio.ko
 
 if [ -e $WL12xx_MODULE ];
@@ -27,9 +27,6 @@ else
     echo "********************************************************"
     exit
 fi
-
-# Remount system partition as rw
-mount -o remount rw /system
 
 # Remove old NVS file
 rm /system/etc/firmware/ti-connectivity/wl1271-nvs.bin
