@@ -6414,7 +6414,7 @@ static int __devinit wl12xx_probe(struct platform_device *pdev)
 		wl->irq_wake_enabled = true;
 		device_init_wakeup(wl->dev, 1);
 		if (pdata->pwr_in_suspend) {
-			hw->wiphy->wowlan.flags = WIPHY_WOWLAN_ANY;
+			hw->wiphy->wowlan.flags = 0;
 			hw->wiphy->wowlan.n_patterns = WL1271_MAX_RX_FILTERS;
 			hw->wiphy->wowlan.pattern_min_len = 1;
 			hw->wiphy->wowlan.pattern_max_len =
