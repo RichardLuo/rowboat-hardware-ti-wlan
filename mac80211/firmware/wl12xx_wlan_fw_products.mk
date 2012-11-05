@@ -10,6 +10,6 @@ PRODUCT_COPY_FILES += \
     hardware/ti/wlan/mac80211/firmware/wl128x-nvs.bin:system/etc/firmware/ti-connectivity/wl128x-nvs.bin
 else
 PRODUCT_COPY_FILES += \
-    hardware/ti/wlan/mac80211/firmware/wl18xx-fw.bin:system/etc/firmware/ti-connectivity/wl18xx-fw.bin \
+    hardware/ti/wlan/mac80211/firmware/wl18xx-fw-mc.bin:system/etc/firmware/ti-connectivity/wl18xx-fw-mc.bin \
     hardware/ti/wlan/mac80211/firmware/wl18xx-conf.bin:system/etc/firmware/ti-connectivity/wl18xx-conf.bin
 endif
