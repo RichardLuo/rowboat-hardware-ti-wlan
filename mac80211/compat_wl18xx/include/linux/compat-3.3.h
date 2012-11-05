@@ -35,11 +35,6 @@ static inline void skb_complete_wifi_ack(struct sk_buff *skb, bool acked)
 
 typedef u32 netdev_features_t;
 
-static inline void skb_complete_wifi_ack(struct sk_buff *skb, bool acked)
-{
-	WARN_ON(1);
-}
-
 /* source include/linux/device.h */
 /**
  * module_driver() - Helper macro for drivers that don't do anything
