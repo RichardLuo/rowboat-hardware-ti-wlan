@@ -78,6 +78,16 @@ include $(BUILD_PREBUILT)
 
 ########################
 
+include $(CLEAR_VARS)
+LOCAL_MODULE := wilink7.sh
+LOCAL_MODULE_TAGS := eng
+LOCAL_MODULE_PATH := $(TARGET_OUT)/bin
+LOCAL_SRC_FILES := Switch_To_WiLink7.sh
+LOCAL_MODULE_CLASS := SCRIPT
+include $(BUILD_PREBUILT)
+
+########################
+
 #
 # wpa_supplicant.conf is now generated on the fly
 #

@@ -38,7 +38,6 @@
 #include "conf.h"
 #include "ini.h"
 
-
 /*
  * wl127x and wl128x are using the same NVS file name. However, the
  * ini parameters between them are different.  The driver validates
@@ -66,7 +65,11 @@
 #define WL12XX_INVALID_ROLE_ID     0xff
 #define WL12XX_INVALID_LINK_ID     0xff
 
+/* the driver supports the 2.4Ghz and 5Ghz bands */
+#define WLCORE_NUM_BANDS           2
+
 #define WL12XX_MAX_RATE_POLICIES 16
+#define WLCORE_MAX_KLV_TEMPLATES 4
 
 /* Defined by FW as 0. Will not be freed or allocated. */
 #define WL12XX_SYSTEM_HLID         0
@@ -84,15 +87,10 @@
 #define WL1271_AP_BSS_INDEX        0
 #define WL1271_AP_DEF_BEACON_EXP   20
 
-#define WL1271_AGGR_BUFFER_SIZE (15 * PAGE_SIZE)
-
-#define WLCORE_AGGR_MAX_PACKETS	(WL1271_AGGR_BUFFER_SIZE /	\
-				 sizeof(struct ieee80211_hdr))
-
-enum wl1271_state {
-	WL1271_STATE_OFF,
-	WL1271_STATE_ON,
-	WL1271_STATE_PLT,
+enum wlcore_state {
+	WLCORE_STATE_OFF,
+	WLCORE_STATE_RESTARTING,
+	WLCORE_STATE_ON,
 };
 
 enum wl12xx_fw_type {
@@ -129,6 +127,7 @@ struct wl1271_chip {
 	u32 id;
 	char fw_ver_str[ETHTOOL_BUSINFO_LEN];
 	unsigned int fw_ver[NUM_FW_VER];
+	char phy_fw_ver_str[ETHTOOL_BUSINFO_LEN];
 };
 
 #define NUM_TX_QUEUES              4
@@ -145,7 +144,10 @@ struct wl_fw_packet_counters {
 	/* Cumulative counter of released Voice memory blocks */
 	u8 tx_voice_released_blks;
 
-	u8 padding[3];
+	/* Tx rate of the last transmitted packet */
+	u8 tx_last_rate;
+
+	u8 padding[2];
 } __packed;
 
 /* FW status registers */
@@ -158,9 +160,15 @@ struct wl_fw_status_1 {
 	__le32 rx_pkt_descs[0];
 } __packed;
 
-#define WLCORE_FW_STATUS_1_LEN (sizeof(*wl->fw_status_1) + \
-				(sizeof(wl->fw_status_1->rx_pkt_descs[0]) * \
-				 wl->num_rx_desc))
+/*
+ * Each HW arch has a different number of Rx descriptors.
+ * The length of the status depends on it, since it holds an array
+ * of descriptors.
+ */
+#define WLCORE_FW_STATUS_1_LEN(num_rx_desc) \
+		(sizeof(struct wl_fw_status_1) + \
+		(sizeof(((struct wl_fw_status_1 *)0)->rx_pkt_descs[0])) * \
+		num_rx_desc)
 
 struct wl_fw_status_2 {
 	__le32 fw_localtime;
@@ -202,10 +210,10 @@ struct wl1271_scan {
 };
 
 struct wl1271_if_operations {
-	void (*read)(struct device *child, int addr, void *buf, size_t len,
-		     bool fixed);
-	void (*write)(struct device *child, int addr, void *buf, size_t len,
-		     bool fixed);
+	int __must_check (*read)(struct device *child, int addr, void *buf,
+				 size_t len, bool fixed);
+	int __must_check (*write)(struct device *child, int addr, void *buf,
+				  size_t len, bool fixed);
 	void (*reset)(struct device *child);
 	void (*init)(struct device *child);
 	int (*power)(struct device *child, bool enable);
@@ -241,11 +249,13 @@ enum wl12xx_flags {
 	WL1271_FLAG_RECOVERY_IN_PROGRESS,
 	WL1271_FLAG_VIF_CHANGE_IN_PROGRESS,
 	WL1271_FLAG_INTENDED_FW_RECOVERY,
+	WL1271_FLAG_IO_FAILED,
 };
 
 enum wl12xx_vif_flags {
 	WLVIF_FLAG_INITIALIZED,
 	WLVIF_FLAG_STA_ASSOCIATED,
+	WLVIF_FLAG_STA_AUTHORIZED,
 	WLVIF_FLAG_IBSS_JOINED,
 	WLVIF_FLAG_AP_STARTED,
 	WLVIF_FLAG_IN_PS,
@@ -256,6 +266,8 @@ enum wl12xx_vif_flags {
 	WLVIF_FLAG_AP_PROBE_RESP_SET,
 	WLVIF_FLAG_IN_USE,
 };
+
+struct wl12xx_vif;
 
 struct wl1271_link {
 	/* AP-mode - TX queue per AC in link */
@@ -269,40 +281,49 @@ struct wl1271_link {
 
 	/* bitmap of TIDs where RX BA sessions are active for this link */
 	u8 ba_bitmap;
+
+	/* The wlvif this link belongs to. Might be null for global links */
+	struct wl12xx_vif *wlvif;
 };
 
-#define WL1271_MAX_RX_DATA_FILTERS 4
-#define WL1271_RX_DATA_FILTER_MAX_FIELD_PATTERNS 8
+#define WL1271_MAX_RX_FILTERS 5
+#define WL1271_RX_FILTER_MAX_FIELDS 8
 
-/* FW MAX FILTER SIZE is 98 bytes. The MAX_PATTERN_SIZE is imposed
- * after taking into account the mask bytes and other structs members
- */
-#define WL1271_RX_DATA_FILTER_MAX_PATTERN_SIZE 43
-#define WL1271_RX_DATA_FILTER_ETH_HEADER_SIZE 14
+#define WL1271_RX_FILTER_ETH_HEADER_SIZE 14
+#define WL1271_RX_FILTER_MAX_FIELDS_SIZE 95
+#define RX_FILTER_FIELD_OVERHEAD				\
+	(sizeof(struct wl12xx_rx_filter_field) - sizeof(u8 *))
+#define WL1271_RX_FILTER_MAX_PATTERN_SIZE			\
+	(WL1271_RX_FILTER_MAX_FIELDS_SIZE - RX_FILTER_FIELD_OVERHEAD)
 
-#define WL1271_RX_DATA_FILTER_FLAG_MASK                BIT(0)
-#define WL1271_RX_DATA_FILTER_FLAG_IP_HEADER           0
-#define WL1271_RX_DATA_FILTER_FLAG_ETHERNET_HEADER     BIT(1)
+#define WL1271_RX_FILTER_FLAG_MASK                BIT(0)
+#define WL1271_RX_FILTER_FLAG_IP_HEADER           0
+#define WL1271_RX_FILTER_FLAG_ETHERNET_HEADER     BIT(1)
 
-enum rx_data_filter_action {
+enum rx_filter_action {
 	FILTER_DROP = 0,
 	FILTER_SIGNAL = 1,
 	FILTER_FW_HANDLE = 2
 };
 
-struct wl12xx_rx_data_filter_field {
+enum plt_mode {
+	PLT_OFF = 0,
+	PLT_ON = 1,
+	PLT_FEM_DETECT = 2,
+};
+
+struct wl12xx_rx_filter_field {
 	__le16 offset;
 	u8 len;
 	u8 flags;
-	u8 pattern[0];
+	u8 *pattern;
 } __packed;
 
-struct wl12xx_rx_data_filter {
+struct wl12xx_rx_filter {
 	u8 action;
 	int num_fields;
-	int fields_size;
-	struct wl12xx_rx_data_filter_field fields[0];
-} __packed;
+	struct wl12xx_rx_filter_field fields[WL1271_RX_FILTER_MAX_FIELDS];
+};
 
 struct wl1271_station {
 	u8 hlid;
@@ -329,7 +350,11 @@ struct wl12xx_vif {
 			u8 ap_rate_idx;
 			u8 p2p_rate_idx;
 
+			u8 klv_template_id;
+
 			bool qos;
+			/* channel type we started the STA role with */
+			enum nl80211_channel_type role_chan_type;
 		} sta;
 		struct {
 			u8 global_hlid;
@@ -351,6 +376,9 @@ struct wl12xx_vif {
 	/* the hlid of the last transmitted skb */
 	int last_tx_hlid;
 
+	/* counters of packets per AC, across all links in the vif */
+	int tx_queue_count[NUM_TX_QUEUES];
+
 	unsigned long links_map[BITS_TO_LONGS(WL12XX_MAX_LINKS)];
 
 	u8 ssid[IEEE80211_MAX_SSID_LEN + 1];
@@ -361,7 +389,7 @@ struct wl12xx_vif {
 	int channel;
 	enum nl80211_channel_type channel_type;
 
-	u32 bitrate_masks[IEEE80211_NUM_BANDS];
+	u32 bitrate_masks[WLCORE_NUM_BANDS];
 	u32 basic_rate_set;
 
 	/*
@@ -385,9 +413,6 @@ struct wl12xx_vif {
 	/* Our association ID */
 	u16 aid;
 
-	/* Session counter for the chipset */
-	int session_counter;
-
 	/* retry counter for PSM entries */
 	u8 psm_entry_retry;
 
@@ -405,10 +430,17 @@ struct wl12xx_vif {
 	bool ba_support;
 	bool ba_allowed;
 
+	bool wmm_enabled;
+
 	/* Rx Streaming */
 	struct work_struct rx_streaming_enable_work;
 	struct work_struct rx_streaming_disable_work;
 	struct timer_list rx_streaming_timer;
+
+	struct delayed_work channel_switch_work;
+	struct delayed_work connection_loss_work;
+
+	bool pending_roc;
 
 	/*
 	 * This struct must be last!
@@ -432,6 +464,7 @@ struct wl12xx_vif {
 
 static inline struct wl12xx_vif *wl12xx_vif_to_data(struct ieee80211_vif *vif)
 {
+	WARN_ON(!vif);
 	return (struct wl12xx_vif *)vif->drv_priv;
 }
 
@@ -457,11 +490,19 @@ struct ieee80211_vif *wl12xx_wlvif_to_vif(struct wl12xx_vif *wlvif)
 #define wl12xx_for_each_wlvif_ap(wl, wlvif)	\
 		wl12xx_for_each_wlvif_bss_type(wl, wlvif, BSS_TYPE_AP_BSS)
 
-int wl1271_plt_start(struct wl1271 *wl);
+int wl1271_plt_start(struct wl1271 *wl, const enum plt_mode plt_mode);
 int wl1271_plt_stop(struct wl1271 *wl);
 int wl1271_recalc_rx_streaming(struct wl1271 *wl, struct wl12xx_vif *wlvif);
 void wl12xx_queue_recovery_work(struct wl1271 *wl);
 size_t wl12xx_copy_fwlog(struct wl1271 *wl, u8 *memblock, size_t maxlen);
+int wl1271_rx_filter_alloc_field(struct wl12xx_rx_filter *filter,
+					u16 offset, u8 flags,
+					u8 *pattern, u8 len);
+void wl1271_rx_filter_free(struct wl12xx_rx_filter *filter);
+struct wl12xx_rx_filter *wl1271_rx_filter_alloc(void);
+int wl1271_rx_filter_get_fields_size(struct wl12xx_rx_filter *filter);
+void wl1271_rx_filter_flatten_fields(struct wl12xx_rx_filter *filter,
+				     u8 *buf);
 
 #define JOIN_TIMEOUT 5000 /* 5000 milliseconds to join */
 
@@ -484,7 +525,5 @@ size_t wl12xx_copy_fwlog(struct wl1271 *wl, u8 *memblock, size_t maxlen);
 #define HW_BG_RATES_MASK	0xffff
 #define HW_HT_RATES_OFFSET	16
 #define HW_MIMO_RATES_OFFSET	24
-
-#define WL12XX_HW_BLOCK_SIZE	256
 
 #endif /* __WLCORE_I_H__ */
